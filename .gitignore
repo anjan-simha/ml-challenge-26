@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS junk
+.DS_Store
+__MACOSX/
+
+# IDE
+.vscode/
+
+# Generated/output files
+output/
+
+# Large ML artifacts
+*.pkl
+*.joblib
+
+# Environment
+.env
+venv/
+.venv/
+
+#dataset
+student_resource/
