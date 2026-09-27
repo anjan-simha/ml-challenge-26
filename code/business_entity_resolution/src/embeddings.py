@@ -40,22 +40,10 @@ class RecordEmbedder:
                 print(f"Warning: Could not load SentenceTransformer ({e}). Falling back to hashing.", flush=True)
                 self._model = False
 
-    def encode(self, texts, batch_size=64, normalize=True):
+    def encode(self, texts, batch_size=256, normalize=True):
         """
         Encode a list of text strings into L2-normalized float32 numpy vectors.
         """
-        self._load_model()
-        if self._model:
-            embeddings = self._model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                normalize_embeddings=normalize,
-                convert_to_numpy=True
-            )
-            return embeddings.astype(np.float32)
-        else:
-            # Deterministic character-ngram hashing fallback if model unavailable
-            from sklearn.feature_extraction.text import HashingVectorizer
-            hv = HashingVectorizer(n_features=256, analyzer="char_wb", ngram_range=(3, 4), norm="l2")
-            return hv.transform(texts).toarray().astype(np.float32)
+        from sklearn.feature_extraction.text import HashingVectorizer
+        hv = HashingVectorizer(n_features=64, analyzer="char_wb", ngram_range=(3, 4), norm="l2")
+        return hv.transform(texts).toarray().astype(np.float32)

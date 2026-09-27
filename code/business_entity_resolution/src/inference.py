@@ -68,6 +68,7 @@ def run_country_inference(country, s1_records, cand_records, model, threshold, c
     blocker = MultiRuleBlocker(max_candidates_per_entity=20, max_postings_per_key=150)
     for c_rec in cand_records.values():
         blocker.add_candidate(c_rec)
+    blocker.finalize_index()
 
     print(f"[{country}] Generating candidates and scoring {len(s1_records):,} S1 entities...", flush=True)
 

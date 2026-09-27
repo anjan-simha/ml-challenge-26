@@ -9,6 +9,8 @@ All blocking operations are partitioned strictly by country (open-set support).
 
 from collections import defaultdict
 from .preprocessing import preprocess_record
+from .embeddings import RecordEmbedder, build_composite_text
+from .faiss_index import FaissSimilarityIndex
 
 
 class MultiRuleBlocker:
@@ -17,9 +19,10 @@ class MultiRuleBlocker:
     Combines name token, name prefix, and address number/token keys to achieve >98% recall.
     """
 
-    def __init__(self, max_candidates_per_entity=25, max_postings_per_key=250):
+    def __init__(self, max_candidates_per_entity=30, max_postings_per_key=300, use_faiss=False):
         self.max_candidates = max_candidates_per_entity
         self.max_postings = max_postings_per_key
+        self.use_faiss = use_faiss
         
         # Inverted indexes: key -> list of candidate entity IDs
         self.token_index = defaultdict(list)
@@ -27,6 +30,11 @@ class MultiRuleBlocker:
         self.addr_num_name_index = defaultdict(list)
         self.addr_num_addr_index = defaultdict(list)
         self.exact_name_index = defaultdict(list)
+        
+        # FAISS components
+        self.faiss_index = None
+        self.embedder = RecordEmbedder() if use_faiss else None
+        self.cand_records = []
 
     def add_candidate(self, prep_rec):
         """Add a preprocessed Source 2 or Source 3 candidate record to all indexes."""
@@ -42,23 +50,37 @@ class MultiRuleBlocker:
         if name_norm:
             self.exact_name_index[(c, name_norm)].append(cand_id)
 
-        # 2. Significant name tokens (top 2)
-        for tok in name_sig[:2]:
+        # 2. Significant name tokens (top 3)
+        for tok in name_sig[:3]:
             self.token_index[(c, tok)].append(cand_id)
 
         # 3. Name prefix (first 5 alphanumeric characters)
         if prefix:
             self.prefix_index[(c, prefix)].append(cand_id)
 
-        # 4. Address number + first name token
+        # 4. Address number + name token
         if nums and name_sig:
-            first_num = nums[0]
-            self.addr_num_name_index[(c, first_num, name_sig[0])].append(cand_id)
+            for num in nums[:1]:
+                for tok in name_sig[:2]:
+                    self.addr_num_name_index[(c, num, tok)].append(cand_id)
 
-        # 5. Address number + first significant address token
+        # 5. Address number + significant address token
         if nums and addr_sig:
-            first_num = nums[0]
-            self.addr_num_addr_index[(c, first_num, addr_sig[0])].append(cand_id)
+            for num in nums[:1]:
+                for tok in addr_sig[:2]:
+                    self.addr_num_addr_index[(c, num, tok)].append(cand_id)
+                    
+        if self.use_faiss:
+            self.cand_records.append(prep_rec)
+
+    def finalize_index(self):
+        if self.use_faiss and self.cand_records:
+            texts = [build_composite_text(r) for r in self.cand_records]
+            ids = [r["entity_id"] for r in self.cand_records]
+            embeddings = self.embedder.encode(texts, batch_size=256)
+            self.faiss_index = FaissSimilarityIndex(dimension=embeddings.shape[1])
+            self.faiss_index.build(embeddings, ids)
+            self.cand_records = [] # free memory
 
     def retrieve_candidates(self, prep_rec):
         """
@@ -102,22 +124,39 @@ class MultiRuleBlocker:
 
         # Rule 4: Address number + Name token
         if nums and name_sig:
-            postings = self.addr_num_name_index.get((c, nums[0], name_sig[0]), [])
-            for cid in postings[:self.max_postings]:
-                candidate_scores[cid] += 4
+            for num in nums[:1]:
+                for tok in name_sig[:2]:
+                    postings = self.addr_num_name_index.get((c, num, tok), [])
+                    for cid in postings[:self.max_postings]:
+                        candidate_scores[cid] += 4
 
         # Rule 5: Address number + Address token (crucial for empty or modified names)
         if nums and addr_sig:
-            postings = self.addr_num_addr_index.get((c, nums[0], addr_sig[0]), [])
-            for cid in postings[:self.max_postings]:
-                candidate_scores[cid] += 3
+            for num in nums[:1]:
+                for tok in addr_sig[:2]:
+                    postings = self.addr_num_addr_index.get((c, num, tok), [])
+                    for cid in postings[:self.max_postings]:
+                        candidate_scores[cid] += 3
 
-        if not candidate_scores:
+        if not candidate_scores and not self.faiss_index:
             return []
 
         # Sort by hit score descending, then take top K
         sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
-        return [cid for cid, _ in sorted_candidates[:self.max_candidates]]
+        top_cands = [cid for cid, _ in sorted_candidates[:self.max_candidates]]
+        
+        if self.use_faiss and self.faiss_index:
+            text = build_composite_text(prep_rec)
+            emb = self.embedder.encode([text], batch_size=256)
+            faiss_cands = self.faiss_index.search(emb, top_k=5)[0]
+            # merge
+            seen = set(top_cands)
+            for fc in faiss_cands:
+                if fc not in seen:
+                    top_cands.append(fc)
+                    seen.add(fc)
+                    
+        return top_cands[:self.max_candidates + 5]
 
     def clear(self):
         """Free inverted index memory."""

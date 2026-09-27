@@ -113,6 +113,7 @@ def train_pipeline(train_dir, model_dir, sample_size=40000, num_boost_round=300)
             blocker = MultiRuleBlocker(max_candidates_per_entity=20, max_postings_per_key=150)
             for c_rec in cands_in_country:
                 blocker.add_candidate(c_rec)
+            blocker.finalize_index()
 
             for s1_rec in s1_list:
                 s1_id = s1_rec["entity_id"]
